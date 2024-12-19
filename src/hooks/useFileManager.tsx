@@ -39,6 +39,7 @@ export interface FileManagerResult {
   getFileType: (
     file: FileUploadModel,
   ) => keyof typeof FILE_EXTENSIONS | "UNKNOWN";
+  getSignedUrl: (file: FileUploadModel) => Promise<string>;
   downloadFile: (
     file: FileUploadModel,
     associating_id: string,
@@ -219,6 +220,50 @@ export default function useFileManager(
 
   const editFile = (file: FileUploadModel, associating_id: string) => {
     setEditDialogueOpen({ ...file, associating_id });
+  };
+
+  const urlCache = new Map<string, { url: string; timestamp: number }>();
+  const CACHE_DURATION = 5 * 60 * 1000; // 5 min
+  const cleanExpiredCache = () => {
+    const now = Date.now();
+    for (const [key, value] of urlCache.entries()) {
+      if (now - value.timestamp >= CACHE_DURATION) {
+        urlCache.delete(key);
+      }
+    }
+  };
+
+  const getSignedUrl = async (file: FileUploadModel) => {
+    if (!file.id || !file.associating_id) {
+      throw new Error("Invalid file: missing id or associating_id");
+    }
+
+    const cacheKey = `${file.id}-${file.associating_id}`;
+    const cached = urlCache.get(cacheKey);
+
+    cleanExpiredCache();
+
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return cached.url;
+    }
+
+    try {
+      const { data } = await request(routes.retrieveUpload, {
+        query: { file_type: fileType, associating_id: file.associating_id },
+        pathParams: { id: file.id },
+      });
+
+      if (!data?.read_signed_url) {
+        throw new Error("Failed to retrieve signed URL");
+      }
+
+      const url = data.read_signed_url;
+      urlCache.set(cacheKey, { url, timestamp: Date.now() });
+      return url;
+    } catch (error) {
+      Notification.Error({ msg: "Failed to get file URL" });
+      throw error;
+    }
   };
 
   const Dialogues = (
@@ -476,6 +521,7 @@ export default function useFileManager(
     Dialogues,
     isPreviewable,
     getFileType,
+    getSignedUrl,
     downloadFile,
     type: fileType,
   };

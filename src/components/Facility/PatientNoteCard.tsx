@@ -1,18 +1,23 @@
 import dayjs from "dayjs";
 import { t } from "i18next";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import CareIcon from "@/CAREUI/icons/CareIcon";
 
+import { Avatar } from "@/components/Common/Avatar";
 import ButtonV2 from "@/components/Common/ButtonV2";
 import DialogModal from "@/components/Common/Dialog";
+import { FilePreviewCard } from "@/components/Common/FilePreviewCard";
+import NotePreview from "@/components/Common/NotePreview";
 import Spinner from "@/components/Common/Spinner";
 import {
   PatientNotesEditModel,
   PatientNotesModel,
 } from "@/components/Facility/models";
+import { FileUploadModel } from "@/components/Patient/models";
 
 import useAuthUser from "@/hooks/useAuthUser";
+import useFileManager from "@/hooks/useFileManager";
 import useSlug from "@/hooks/useSlug";
 
 import { USER_TYPES_MAP } from "@/common/constants";
@@ -23,27 +28,39 @@ import request from "@/Utils/request/request";
 import {
   classNames,
   formatDateTime,
+  formatDisplayName,
   formatName,
   relativeDate,
 } from "@/Utils/utils";
 
 const PatientNoteCard = ({
   note,
-  setReload,
+  refetch,
   disableEdit,
+  allowReply = true,
+  allowThreadView = false,
   setReplyTo,
+  mode = "default-view",
+  setThreadViewNote,
 }: {
   note: PatientNotesModel;
-  setReload: any;
+  refetch?: () => void;
   disableEdit?: boolean;
+  allowReply?: boolean;
+  allowThreadView?: boolean;
   setReplyTo?: (reply_to: PatientNotesModel | undefined) => void;
+  mode?: "thread-view" | "default-view";
+  setThreadViewNote?: (noteId: string) => void;
 }) => {
-  const patientId = useSlug("patient");
   const [isEditing, setIsEditing] = useState(false);
   const [noteField, setNoteField] = useState(note.note);
   const [showEditHistory, setShowEditHistory] = useState(false);
   const [editHistory, setEditHistory] = useState<PatientNotesEditModel[]>([]);
+  const [isPlaying, setIsPlaying] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const authUser = useAuthUser();
+  const patientId = useSlug("patient");
 
   const fetchEditHistory = async () => {
     const { res, data } = await request(routes.getPatientNoteEditHistory, {
@@ -76,142 +93,222 @@ const PatientNoteCard = ({
     if (res?.status === 200) {
       Success({ msg: "Note updated successfully" });
       setIsEditing(false);
-      setReload(true);
+      refetch?.();
     }
+  };
+
+  const fileManager = useFileManager({
+    type: "PATIENT_NOTES",
+    uploadedFiles: note?.files,
+  });
+
+  const handleAudioPlay = (file: FileUploadModel) => {
+    if (isPlaying === file.id) {
+      audioRef.current?.pause();
+      setIsPlaying(null);
+    } else {
+      if (audioRef.current) {
+        setIsLoading(file.id!);
+        fileManager
+          .getSignedUrl(file)
+          .then((url) => {
+            if (audioRef.current) {
+              audioRef.current.src = url;
+              audioRef.current.play();
+              setIsPlaying(file.id!);
+            }
+          })
+          .catch(() => {
+            Error({ msg: "Failed to play audio file" });
+            setIsPlaying(null);
+          })
+          .finally(() => {
+            setIsLoading(null);
+          });
+      }
+    }
+  };
+
+  const isAudioFile = (file: FileUploadModel) => {
+    return fileManager.getFileType(file) === "AUDIO";
   };
 
   return (
     <>
-      {" "}
+      <audio
+        ref={audioRef}
+        onEnded={() => setIsPlaying(null)}
+        onError={() => {
+          Error({ msg: "Failed to play audio file" });
+          setIsPlaying(null);
+          setIsLoading(null);
+        }}
+      />
       <div
         className={classNames(
-          "mt-4 flex w-full flex-col rounded-lg border border-secondary-300 bg-white p-3 text-secondary-800",
+          "group flex flex-col rounded-lg border border-secondary-300 bg-white px-3 py-1 text-secondary-800",
           note.user_type === "RemoteSpecialist" && "border-primary-400",
         )}
       >
-        <div className="flex justify-between">
-          <div>
-            <div>
-              <span className="text-sm font-semibold text-secondary-700">
-                {formatName(note.created_by_object)}
-              </span>
-              {note.user_type && (
-                <span className="pl-2 text-sm text-secondary-700">
-                  {`(${USER_TYPES_MAP[note.user_type]})`}
+        <div className="relative flex items-center gap-2">
+          <Avatar
+            name={formatDisplayName(note.created_by_object)}
+            imageUrl={note.created_by_object.read_profile_picture_url}
+            className="h-8 w-8 rounded-full text-black/50"
+          />
+          <div className="flex-grow">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-semibold text-secondary-700">
+                  {formatName(note.created_by_object)}
                 </span>
-              )}
-            </div>
-            <div className="text-xs text-secondary-600">
-              <div className="tooltip inline">
-                <span className="tooltip-text tooltip-bottom">
-                  {formatDateTime(note.created_date)}
-                </span>
-                Created {relativeDate(note.created_date, true)}
+                {note.user_type && (
+                  <span className="ml-2 text-sm text-secondary-700">
+                    {`(${USER_TYPES_MAP[note.user_type]})`}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                {!disableEdit &&
+                  note.created_by_object.id === authUser.id &&
+                  !isEditing && (
+                    <ButtonV2
+                      ghost
+                      onClick={() => {
+                        setIsEditing(true);
+                      }}
+                      className="bg-secondary-100 p-2"
+                      aria-label={t("edit")}
+                    >
+                      <CareIcon icon="l-pen" className="h-4 w-4" />
+                    </ButtonV2>
+                  )}
+                {allowReply && (
+                  <ButtonV2
+                    ghost
+                    onClick={() => {
+                      setReplyTo && setReplyTo(note);
+                    }}
+                    className="bg-secondary-100 p-2"
+                    aria-label={t("reply")}
+                  >
+                    <CareIcon icon="l-corner-up-left-alt" className="h-4 w-4" />
+                  </ButtonV2>
+                )}
               </div>
             </div>
-            {
-              // If last edited date is same as created date, then it is not edited
-              !dayjs(note.last_edited_date).isSame(
-                note.created_date,
-                "second",
-              ) && (
-                <div className="flex">
-                  <div
-                    className="cursor-pointer text-xs text-secondary-600"
-                    onClick={() => {
-                      fetchEditHistory();
-                      setShowEditHistory(true);
-                    }}
-                  >
-                    <div className="tooltip inline">
-                      <span className="tooltip-text tooltip-bottom">
-                        {formatDateTime(note.last_edited_date)}
-                      </span>
-                      Edited {relativeDate(note.last_edited_date, true)}
-                    </div>
-                    <CareIcon
-                      icon="l-history"
-                      className="ml-1 h-4 w-4 pt-[3px] text-primary-600"
-                    />
-                  </div>
-                </div>
-              )
-            }
-          </div>
-          <div className="flex gap-2">
-            {!disableEdit &&
-              note.created_by_object.id === authUser.id &&
-              !isEditing && (
-                <ButtonV2
-                  className="tooltip"
-                  ghost
+            {note.last_edited_date &&
+            !dayjs(note.last_edited_date).isSame(
+              note.created_date,
+              "second",
+            ) ? (
+              <div className="flex">
+                <div
+                  className="cursor-pointer text-xs text-secondary-600"
                   onClick={() => {
-                    setIsEditing(true);
+                    fetchEditHistory();
+                    setShowEditHistory(true);
                   }}
                 >
-                  <CareIcon icon="l-pen" className="h-5 w-5" />
-                  <span className="tooltip-text tooltip-bottom -translate-x-11 -translate-y-1 text-xs">
-                    {t("edit")}
-                  </span>
-                </ButtonV2>
-              )}
-            <ButtonV2
-              className="tooltip"
-              ghost
-              onClick={() => {
-                setReplyTo && setReplyTo(note);
-              }}
-            >
-              <CareIcon
-                icon="l-corner-up-left-alt"
-                className="tooltip h-5 w-5"
-              />
-              <span className="tooltip-text tooltip-bottom -translate-x-11 -translate-y-1 text-xs">
-                {t("reply")}
-              </span>
-            </ButtonV2>
-          </div>
-        </div>
-        {
-          <div className="mt-2">
-            {isEditing ? (
-              <div className="flex flex-col">
-                <textarea
-                  rows={2}
-                  className="h-20 w-full resize-none rounded-lg border border-secondary-300 p-2"
-                  value={noteField}
-                  onChange={(e) => setNoteField(e.target.value)}
-                ></textarea>
-                <div className="mt-2 flex justify-end gap-2">
-                  <ButtonV2
-                    className="py-1"
-                    variant="secondary"
-                    border
-                    onClick={() => {
-                      setIsEditing(false);
-                      setNoteField(note.note);
-                    }}
-                    id="cancel-update-note-button"
-                  >
-                    <CareIcon icon="l-times-circle" className="h-5 w-5" />
-                    Cancel
-                  </ButtonV2>
-                  <ButtonV2
-                    className="py-1"
-                    onClick={onUpdateNote}
-                    id="update-note-button"
-                  >
-                    <CareIcon icon="l-check" className="h-5 w-5 text-white" />
-                    Update Note
-                  </ButtonV2>
+                  <div className="tooltip inline">
+                    <span className="tooltip-text tooltip-bottom">
+                      {formatDateTime(note.last_edited_date)}
+                    </span>
+                    Edited {relativeDate(note.last_edited_date, true)}
+                  </div>
+                  <CareIcon
+                    icon="l-history"
+                    className="ml-1 h-4 w-4 pt-[3px] text-primary-600"
+                  />
                 </div>
               </div>
             ) : (
-              <div className="text-sm text-secondary-700">{noteField}</div>
+              <div className="text-xs text-secondary-600">
+                <div className="tooltip inline">
+                  <span className="tooltip-text tooltip-bottom">
+                    {formatDateTime(note.created_date)}
+                  </span>
+                  Created {relativeDate(note.created_date, true)}
+                </div>
+              </div>
             )}
           </div>
-        }
+        </div>
+
+        <div className="mt-2">
+          {isEditing ? (
+            <div className="flex flex-col">
+              <textarea
+                rows={2}
+                className="h-20 w-full resize-none rounded-lg border border-secondary-300 p-2"
+                value={noteField}
+                onChange={(e) => setNoteField(e.target.value)}
+              ></textarea>
+              <div className="mt-2 flex justify-end gap-2">
+                <ButtonV2
+                  className="py-1"
+                  variant="secondary"
+                  border
+                  onClick={() => {
+                    setIsEditing(false);
+                    setNoteField(note.note);
+                  }}
+                  id="cancel-update-note-button"
+                >
+                  <CareIcon icon="l-times-circle" className="h-5 w-5" />
+                  Cancel
+                </ButtonV2>
+                <ButtonV2
+                  className="py-1"
+                  onClick={onUpdateNote}
+                  id="update-note-button"
+                >
+                  <CareIcon icon="l-check" className="h-5 w-5 text-white" />
+                  Update Note
+                </ButtonV2>
+              </div>
+            </div>
+          ) : (
+            <div
+              onClick={() => {
+                if (allowThreadView && setThreadViewNote)
+                  setThreadViewNote(note.id);
+              }}
+              className={`pl-11 text-sm text-secondary-700 ${allowThreadView ? "cursor-pointer" : ""}`}
+            >
+              <NotePreview
+                initialNote={noteField}
+                mentioned_users={note.mentioned_users}
+              />
+              <div className="flex flex-wrap gap-2">
+                {note?.files?.map((file: FileUploadModel) => (
+                  <FilePreviewCard
+                    key={file.id}
+                    file={file}
+                    readonly
+                    isPlaying={isPlaying === file.id}
+                    isLoading={isLoading === file.id}
+                    onPlay={
+                      isAudioFile(file)
+                        ? () => handleAudioPlay(file)
+                        : undefined
+                    }
+                    onClick={() => fileManager.viewFile(file, note.id)}
+                  />
+                ))}
+              </div>
+              {mode == "thread-view" && note.child_notes.length > 0 && (
+                <div className="mt-2 flex items-center text-xs text-secondary-500">
+                  <CareIcon icon="l-corner-down-right" className="h-3 w-3" />
+                  {note.child_notes.length}{" "}
+                  {note.child_notes.length === 1 ? t("reply") : t("replies")}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
+      {fileManager.Dialogues}
       {showEditHistory && (
         <DialogModal
           show={showEditHistory}
@@ -225,7 +322,7 @@ const PatientNoteCard = ({
                 <strong> {note.id}</strong>
               </p>
             </div>
-            <div className="h-96 overflow-scroll">
+            <div className="h-96 overflow-y-scroll">
               {editHistory.length === 0 && (
                 <div className="flex h-full items-center justify-center">
                   <Spinner />
@@ -252,7 +349,9 @@ const PatientNoteCard = ({
                       <p className="text-sm font-medium text-secondary-500">
                         Note
                       </p>
-                      <p className="text-sm text-secondary-900">{edit.note}</p>
+                      <div className="text-sm text-secondary-900">
+                        <NotePreview initialNote={edit.note} />
+                      </div>
                     </div>
                   </div>
                 );
